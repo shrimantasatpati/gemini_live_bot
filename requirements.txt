@@ -1,0 +1,11 @@
+# Core dependencies
+fastapi
+uvicorn
+streamlit
+google-genai
+tiktoken
+plotly
+pandas
+requests
+pyaudio
+audio-recorder-streamlit
