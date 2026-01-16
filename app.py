@@ -6,12 +6,11 @@ import wave
 import glob
 import traceback
 import time
-import av
 import numpy as np
 from pathlib import Path
 from google import genai
 from dotenv import load_dotenv
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
+from audio_recorder_streamlit import audio_recorder
 
 load_dotenv()
 
@@ -33,10 +32,6 @@ COST_PER_1M_OUTPUT_TEXT = 0.40
 # --- SETUP ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
-if "audio_buffer" not in st.session_state:
-    st.session_state.audio_buffer = None
-if "processing_audio" not in st.session_state:
-    st.session_state.processing_audio = False
 
 # --- INSTRUCTION LOADING ---
 def load_instruction_base():
@@ -182,7 +177,7 @@ async def generate_response(input_data, input_type, system_instruction):
 
 # --- UI LAYOUT ---
 st.set_page_config(page_title="Gemini Audio Chat", layout="centered")
-st.title("🎙️ Gemini Live Bot (WebRTC)")
+st.title("🎙️ Gemini Live Bot")
 
 # 1. Sidebar
 with st.sidebar:
@@ -228,7 +223,7 @@ for msg in st.session_state.chat_history:
                 cols[4].metric("Cost", f"${cost:.5f}")
 
 st.divider()
-tab_text, tab_audio = st.tabs(["⌨️ Text Input", "🎙️ WebRTC Audio"])
+tab_text, tab_audio = st.tabs(["⌨️ Text Input", "🎙️ Audio Input"])
 
 # --- TEXT TAB ---
 with tab_text:
@@ -248,82 +243,43 @@ with tab_text:
                 st.session_state.chat_history.append({"role": "assistant", "text": text_resp, "audio": audio_resp, "metrics": metrics})
                 st.rerun()
 
-# --- WEBRTC TAB ---
+# --- AUDIO TAB ---
 with tab_audio:
-    st.write("Click 'Start' to record. Click 'Stop' to send.")
+    st.write("🎤 Click the microphone button below to record your message")
     
-    # Simple Audio Processor to hold frames
-    class AudioRecorder(AudioProcessorBase):
-        def __init__(self):
-            self.frames = []
-        
-        def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-            self.frames.append(frame)
-            return frame
-
-    # Setup WebRTC Streamer with proper key management
-    webrtc_ctx = webrtc_streamer(
-        key="speech-to-text",
-        mode=WebRtcMode.SENDONLY,
-        audio_processor_factory=AudioRecorder,
-        audio_receiver_size=1024,
-        media_stream_constraints={"video": False, "audio": True},
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-        async_processing=True,
+    # Audio recorder widget
+    audio_bytes = audio_recorder(
+        text="",
+        recording_color="#e74c3c",
+        neutral_color="#6aa36f",
+        icon_name="microphone",
+        icon_size="3x",
     )
-
-    # Check if recording just stopped and we have frames to process
-    if webrtc_ctx.state.playing:
-        st.info("🔴 Recording... Click 'Stop' when done.")
-        st.session_state.processing_audio = False
-    elif not webrtc_ctx.state.playing and webrtc_ctx.audio_processor and not st.session_state.processing_audio:
-        audio_frames = webrtc_ctx.audio_processor.frames
+    
+    if audio_bytes:
+        # Display the recorded audio
+        st.audio(audio_bytes, format="audio/wav")
         
-        if audio_frames and len(audio_frames) > 0:
-            st.session_state.processing_audio = True
+        # Process button
+        if st.button("🚀 Send Audio", type="primary"):
+            st.session_state.chat_history.append({"role": "user", "type": "audio", "content": audio_bytes})
             
-            try:
-                # Convert AV frames to WAV bytes
-                output_buffer = io.BytesIO()
-                with av.open(output_buffer, 'w', 'wav') as container:
-                    stream = container.add_stream('pcm_s16le', rate=48000, layout='mono')
-                    for frame in audio_frames:
-                        frame.pts = None
-                        for packet in stream.encode(frame):
-                            container.mux(packet)
-                    for packet in stream.encode():
-                        container.mux(packet)
+            ui_start_time = time.time()
+            with st.spinner("Processing audio..."):
+                text_resp, audio_resp, metrics = asyncio.run(
+                    generate_response(audio_bytes, "audio", full_system_instruction)
+                )
                 
-                wav_bytes = output_buffer.getvalue()
+                ui_end_time = time.time()
+                metrics["total_latency"] = ui_end_time - ui_start_time
                 
-                if len(wav_bytes) > 1000:  # Ensure we have meaningful audio
-                    st.session_state.chat_history.append({"role": "user", "type": "audio", "content": wav_bytes})
-                    
-                    ui_start_time = time.time()
-                    with st.spinner("Processing audio..."):
-                        text_resp, audio_resp, metrics = asyncio.run(
-                            generate_response(wav_bytes, "audio", full_system_instruction)
-                        )
-                        
-                        ui_end_time = time.time()
-                        metrics["total_latency"] = ui_end_time - ui_start_time
-                        
-                        if metrics.get("error"):
-                            st.error(f"Error: {metrics['error']}")
-                        else:
-                            st.session_state.chat_history.append({
-                                "role": "assistant", 
-                                "text": text_resp, 
-                                "audio": audio_resp, 
-                                "metrics": metrics
-                            })
-                    
-                    st.session_state.processing_audio = False
-                    st.rerun()
+                if metrics.get("error"):
+                    st.error(f"Error: {metrics['error']}")
                 else:
-                    st.warning("Audio too short. Please record a longer message.")
-                    st.session_state.processing_audio = False
-                    
-            except Exception as e:
-                st.error(f"Error processing audio: {str(e)}")
-                st.session_state.processing_audio = False
+                    st.session_state.chat_history.append({
+                        "role": "assistant", 
+                        "text": text_resp, 
+                        "audio": audio_resp, 
+                        "metrics": metrics
+                    })
+                    st.rerun()
