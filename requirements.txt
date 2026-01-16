@@ -7,5 +7,10 @@ tiktoken
 plotly
 pandas
 requests
-pyaudio
+# pyaudio
 audio-recorder-streamlit
+streamlit-webrtc
+av
+google-genai
+python-dotenv
+numpy
