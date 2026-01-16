@@ -16,7 +16,7 @@ from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 load_dotenv()
 
 # --- CONFIGURATION ---
-API_KEY = st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY") # Support Streamlit Secrets
+API_KEY = st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY") 
 MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 KNOWLEDGE_BASE_DIR = "knowledge_bases"
 INSTRUCTION_FILE = "instruction.md"
@@ -30,13 +30,34 @@ CHUNK_SIZE_SEND = 4096
 COST_PER_1M_INPUT_TEXT = 0.10
 COST_PER_1M_OUTPUT_TEXT = 0.40
 
+# --- WEBRTC PROCESSOR (Global Scope) ---
+class AudioRecorder(AudioProcessorBase):
+    def __init__(self):
+        self.frames = []
+
+    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
+        self.frames.append(frame)
+        return frame
+
+# --- ASYNC HELPER (ISOLATION FIX) ---
+def run_async_isolated(coroutine):
+    """
+    Runs an async coroutine in a completely fresh event loop.
+    This prevents conflicts with Streamlit's or WebRTC's existing loops.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coroutine)
+    finally:
+        loop.close()
+
 # --- SETUP ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 # --- INSTRUCTION LOADING ---
 def load_instruction_base():
-    # Updated Template per user request
     default_template = """You are Genie, a warm, approachable, and professional AI assistant representing company {company_name}. 
 
 **Your Role**
@@ -232,7 +253,8 @@ with tab_text:
         st.session_state.chat_history.append({"role": "user", "type": "text", "content": text_input})
         ui_start_time = time.time()
         with st.spinner("Gemini is thinking..."):
-            text_resp, audio_resp, metrics = asyncio.run(
+            # Use isolated loop helper
+            text_resp, audio_resp, metrics = run_async_isolated(
                 generate_response(text_input, "text", full_system_instruction)
             )
             ui_end_time = time.time()
@@ -246,22 +268,15 @@ with tab_text:
 # --- WEBRTC TAB ---
 with tab_audio:
     st.write("Click 'Start' to record. Click 'Stop' to send.")
-    
-    # Simple Audio Processor to hold frames
-    class AudioRecorder(AudioProcessorBase):
-        def __init__(self):
-            self.frames = []
-        def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-            self.frames.append(frame)
-            return frame
 
-    # Setup WebRTC Streamer
+    # Setup WebRTC Streamer with factory
     webrtc_ctx = webrtc_streamer(
         key="speech-to-text",
         mode=WebRtcMode.SENDONLY,
         audio_receiver_size=1024,
         media_stream_constraints={"video": False, "audio": True},
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}, # Crucial for Cloud
+        audio_processor_factory=AudioRecorder,
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
     )
 
     # State management for processing recording after stop
@@ -297,7 +312,8 @@ with tab_audio:
                 
                 ui_start_time = time.time()
                 with st.spinner("Processing WebRTC Audio..."):
-                    text_resp, audio_resp, metrics = asyncio.run(
+                    # Use isolated loop helper
+                    text_resp, audio_resp, metrics = run_async_isolated(
                         generate_response(wav_bytes, "audio", full_system_instruction)
                     )
                     
