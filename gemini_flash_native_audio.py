@@ -6,7 +6,7 @@ import pyaudio
 from google import genai
 from google.genai import types
 
-api_key = 'AIzaSyCLJmvtwWRUF3pZH45wyvRQMRFmy8T0j4Y'
+api_key = ''
 
 # Audio parameters from the Live API
 CHANNELS = 1
@@ -144,4 +144,5 @@ async def main():
     # await save_audio_to_file(prompt, "output2.wav")
 
 if __name__ == "__main__":
+
     asyncio.run(main())
